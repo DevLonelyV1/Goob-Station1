@@ -1,68 +1,44 @@
-# Task to handle Beepsky's patrol and detection of criminals
-- type: htnCompound
-  id: BeepskyPatrolCompound
-  branches:
-    - tasks:
-        - !type: HTNCompoundTask
-          task: PatrolAreaCompound
-    - tasks:
-        - !type: HTNCompoundTask
-          task: HandleCriminalDetectionCompound
-    - tasks:
-        - !type: HTNCompoundTask
-          task: HandleAttackOnBeepskyCompound
-
-# Task to handle scanning and engaging criminals
-- type: htnCompound
-  id: HandleCriminalDetectionCompound
-  branches:
-    - tasks:
-        - !type: HTNPrimitiveTask
-          operator: !type: UtilityOperator
-            proto: ScanForCriminals
-
-        - !type: HTNPrimitiveTask
-          preconditions:
-            - !type: CriminalDetectedPrecondition
-              criminalKey: DetectedCriminal
-          operator: !type: EngageCriminalOperator
-            targetKey: DetectedCriminal
-
-        - !type: HTNPrimitiveTask
-          operator: !type: FollowCriminalOperator
-            targetKey: DetectedCriminal
-
-        - !type: HTNPrimitiveTask
-          preconditions:
-            - !type: TargetInRangePrecondition
-              targetKey: DetectedCriminal
-              rangeKey: ArrestRange
-          operator: !type: StunAndCuffOperator
-            targetKey: DetectedCriminal
-
-        - !type: HTNPrimitiveTask
-          operator: !type: AnnounceArrestOperator
-            targetKey: DetectedCriminal
-            locationKey: ArrestLocation
-
-# Task to handle when Beepsky is attacked
-- type: htnCompound
-  id: HandleAttackOnBeepskyCompound
-  branches:
-    - tasks:
-        - !type: HTNPrimitiveTask
-          operator: !type: UtilityOperator
-            proto: CheckAttackerAccess
-
-        - !type: HTNPrimitiveTask
-          preconditions:
-            - !type: AccessLevelPrecondition
-              accessLevelKey: AttackerAccessLevel
-              requiredLevel: SecurityCommandLevel
-              comparison: Below
-          operator: !type: MarkAsWantedOperator
-            targetKey: Attacker
-
-        - !type: HTNPrimitiveTask
-          operator: !type: EngageCriminalOperator
-            targetKey: Attacker
+Beepsky:
+  Name: "Beepsky"
+  PatrolPaths:
+    - "security_zone_1"
+    - "security_zone_2"
+  PatrolMode: "loop" # Options: loop, random
+  ArrestRange: 7.5
+  CommunicationChannel:
+    Primary: "security"
+    Backup: "command"
+  Health:
+    MaxHealth: 100
+    DamageThreshold: 20 # Threshold at which Beepsky will trigger a repair mode
+    RepairItems:
+      - "welder"
+      - "cable"
+  Repairability:
+    RepairableWith:
+      - "welder"
+      - "cable"
+    RepairTime: 10 # Time in seconds required to repair Beepsky fully
+  WantedSystem:
+    AutoMarkAsWanted: true
+    PriorityTargets:
+      - "antagonist"
+      - "criminal"
+    IgnoreTargets:
+      - "command"
+      - "security"
+  ConstructionRequirements:
+    - "RemoteSignaler"
+    - "SecurityHelmet"
+    - "ProximitySensor"
+    - "CyborgArm"
+    - "Rod"
+    - "Cable"
+  EngagementLogic:
+    FollowUntilOutOfSight: true
+    ProximityCuffing: true
+  AnnouncementTemplates:
+    ArrestAnnouncement: "Arrest in progress. Convict: {criminal_name} at {location}."
+    CuffAnnouncement: "Arrest successful. Convict: {criminal_name} cuffed at {location}."
+    ReturnToPatrolAnnouncement: "Returning to patrol."
+    LowHealthAnnouncement: "Beepsky critically damaged. Returning for repairs."
