@@ -1,0 +1,68 @@
+# Task to handle Beepsky's patrol and detection of criminals
+- type: htnCompound
+  id: BeepskyPatrolCompound
+  branches:
+    - tasks:
+        - !type: HTNCompoundTask
+          task: PatrolAreaCompound
+    - tasks:
+        - !type: HTNCompoundTask
+          task: HandleCriminalDetectionCompound
+    - tasks:
+        - !type: HTNCompoundTask
+          task: HandleAttackOnBeepskyCompound
+
+# Task to handle scanning and engaging criminals
+- type: htnCompound
+  id: HandleCriminalDetectionCompound
+  branches:
+    - tasks:
+        - !type: HTNPrimitiveTask
+          operator: !type: UtilityOperator
+            proto: ScanForCriminals
+
+        - !type: HTNPrimitiveTask
+          preconditions:
+            - !type: CriminalDetectedPrecondition
+              criminalKey: DetectedCriminal
+          operator: !type: EngageCriminalOperator
+            targetKey: DetectedCriminal
+
+        - !type: HTNPrimitiveTask
+          operator: !type: FollowCriminalOperator
+            targetKey: DetectedCriminal
+
+        - !type: HTNPrimitiveTask
+          preconditions:
+            - !type: TargetInRangePrecondition
+              targetKey: DetectedCriminal
+              rangeKey: ArrestRange
+          operator: !type: StunAndCuffOperator
+            targetKey: DetectedCriminal
+
+        - !type: HTNPrimitiveTask
+          operator: !type: AnnounceArrestOperator
+            targetKey: DetectedCriminal
+            locationKey: ArrestLocation
+
+# Task to handle when Beepsky is attacked
+- type: htnCompound
+  id: HandleAttackOnBeepskyCompound
+  branches:
+    - tasks:
+        - !type: HTNPrimitiveTask
+          operator: !type: UtilityOperator
+            proto: CheckAttackerAccess
+
+        - !type: HTNPrimitiveTask
+          preconditions:
+            - !type: AccessLevelPrecondition
+              accessLevelKey: AttackerAccessLevel
+              requiredLevel: SecurityCommandLevel
+              comparison: Below
+          operator: !type: MarkAsWantedOperator
+            targetKey: Attacker
+
+        - !type: HTNPrimitiveTask
+          operator: !type: EngageCriminalOperator
+            targetKey: Attacker
