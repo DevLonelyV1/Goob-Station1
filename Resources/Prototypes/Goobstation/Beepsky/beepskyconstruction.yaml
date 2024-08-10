@@ -1,0 +1,16 @@
+- id: construct_beepsky_chassis
+  time: 10.0
+  ingredients:
+    - proto: ProximitySensor
+      uid: 23024
+    - proto: PartRodMetal
+      uid: 22009
+    - proto: CableMV
+      uid: 9044
+    - proto: RemoteSignaller
+      uid: 24152
+    - proto: ClothingHeadHelmetBasic
+      uid: 12597
+  output:
+    proto: BeepskyChassis
+    uid: 99999 # Replace with the actual UID for the Beepsky chassis

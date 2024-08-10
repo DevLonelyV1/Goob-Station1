@@ -1,339 +1,311 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using Content.Server.AI.Components;
+using Content.Server.AI.Pathfinding;
+using Content.Server.Beepsky.Components;
+using Content.Server.Chat.Managers;
+using Content.Server.Hands.Components;
+using Content.Server.Mind.Components;
+using Content.Server.Popups;
+using Content.Server.Weapon.Melee;
+using Content.Shared.Cuffs.Components;
+using Content.Shared.Damage;
+using Content.Shared.Hands;
+using Content.Shared.MobState.Components;
+using Content.Shared.Popups;
+using Content.Shared.Roles;
+using Content.Shared.Wearable.Components;
+using Robust.Server.AI;
+using Robust.Server.GameObjects;
+using Robust.Shared.Audio;
+using Robust.Shared.Containers;
 using Robust.Shared.GameObjects;
 using Robust.Shared.IoC;
-using Robust.Shared.Localization;
+using Robust.Shared.Log;
+using Robust.Shared.Map;
 using Robust.Shared.Physics;
 using Robust.Shared.Player;
+using Robust.Shared.Random;
 using Robust.Shared.Timing;
 
-// After the using directives, you can define your namespace and classes
-namespace Content.Server.Goobstation.Beepsky
+namespace Content.Server.Beepsky.Systems
 {
-    public class Beepsky
+    public sealed class BeepskySystem : EntitySystem
     {
-        // Your class implementation
-    }
-}
-
-namespace Content.Server.AI
-{
-    public class BeepskyAI : EntitySystem
-    {
-        private const float ScanInterval = 2.5f;
-        private float _scanTimer;
-
-        private IEntity _currentTarget;
+        [Dependency] private readonly IChatManager _chatManager = default!;
+        [Dependency] private readonly IRobustRandom _random = default!;
+        [Dependency] private readonly PathfindingSystem _pathfindingSystem = default!;
+        [Dependency] private readonly PopupSystem _popupSystem = default!;
+        [Dependency] private readonly MeleeWeaponSystem _meleeWeaponSystem = default!;
+        [Dependency] private readonly SharedAudioSystem _audioSystem = default!;
+        [Dependency] private readonly SharedContainerSystem _containerSystem = default!;
 
         public override void Initialize()
         {
             base.Initialize();
-            SubscribeLocalEvent<EntityAttackedEvent>(OnEntityAttacked);
+
+            SubscribeLocalEvent<BeepskyComponent, ComponentStartup>(OnStartup);
+            SubscribeLocalEvent<BeepskyComponent, ComponentShutdown>(OnShutdown);
+            SubscribeLocalEvent<BeepskyComponent, DamageChangedEvent>(OnDamageChanged);
+            SubscribeLocalEvent<BeepskyComponent, EntityUnpausedEvent>(OnUnpaused);
+        }
+
+        private void OnStartup(EntityUid uid, BeepskyComponent component, ComponentStartup args)
+        {
+            InitializePatrol(uid, component);
+        }
+
+        private void OnShutdown(EntityUid uid, BeepskyComponent component, ComponentShutdown args)
+        {
+            // Cleanup logic if necessary
+        }
+
+        private void OnUnpaused(EntityUid uid, BeepskyComponent component, EntityUnpausedEvent args)
+        {
+            // Handle unpausing logic if necessary
+        }
+
+        private void InitializePatrol(EntityUid uid, BeepskyComponent component)
+        {
+            if (component.PatrolPaths.Count == 0)
+            {
+                Logger.Warning($"Beepsky {uid} has no patrol paths defined.");
+                return;
+            }
+
+            EnsureComp<AiControllerComponent>(uid);
+            switch (component.PatrolMode)
+            {
+                case PatrolMode.Loop:
+                    SetupLoopPatrol(uid, component);
+                    break;
+                case PatrolMode.Random:
+                    SetupRandomPatrol(uid, component);
+                    break;
+            }
+        }
+
+        private void SetupLoopPatrol(EntityUid uid, BeepskyComponent component)
+        {
+            var aiComponent = EntityManager.GetComponent<AiControllerComponent>(uid);
+            aiComponent.PatrolRoutes = new Queue<Vector2>();
+
+            foreach (var path in component.PatrolPaths)
+            {
+                var waypoints = GetWaypointsForPath(path);
+                foreach (var waypoint in waypoints)
+                {
+                    aiComponent.PatrolRoutes.Enqueue(waypoint);
+                }
+            }
+
+            aiComponent.IsPatrolling = true;
+        }
+
+        private void SetupRandomPatrol(EntityUid uid, BeepskyComponent component)
+        {
+            var aiComponent = EntityManager.GetComponent<AiControllerComponent>(uid);
+            aiComponent.PatrolRoutes = new Queue<Vector2>();
+
+            var randomPath = _random.Pick(component.PatrolPaths);
+            var waypoints = GetWaypointsForPath(randomPath);
+
+            foreach (var waypoint in waypoints)
+            {
+                aiComponent.PatrolRoutes.Enqueue(waypoint);
+            }
+
+            aiComponent.IsPatrolling = true;
+        }
+
+        private IEnumerable<Vector2> GetWaypointsForPath(string pathName)
+        {
+            // Implement logic to retrieve waypoints based on the path name.
+            // This is a placeholder implementation.
+            return new List<Vector2>();
         }
 
         public override void Update(float frameTime)
         {
-            _scanTimer -= frameTime;
+            base.Update(frameTime);
 
-            if (_scanTimer <= 0)
+            foreach (var (beepsky, ai, xform) in EntityManager.EntityQuery<BeepskyComponent, AiControllerComponent, TransformComponent>())
             {
-                _scanTimer = ScanInterval;
-                DetectAndEngageCriminals();
-            }
+                if (!ai.IsActive)
+                    continue;
 
-            if (_currentTarget != null)
-            {
-                HandleTarget();
+                ProcessBehavior(beepsky.Owner, beepsky, ai, xform, frameTime);
             }
         }
 
-        private void DetectAndEngageCriminals()
+        private void ProcessBehavior(EntityUid uid, BeepskyComponent component, AiControllerComponent ai, TransformComponent xform, float frameTime)
         {
-            var nearbyEntities = IoCManager.Resolve<IEntityLookup>()
-                .GetEntitiesInRange(Owner.Transform.Coordinates, 10f);
+            var nearbyEntities = EntityManager.GetEntitiesInRange(uid, component.ArrestRange);
 
             foreach (var entity in nearbyEntities)
             {
-                if (IsValidCriminal(entity))
+                if (entity == uid)
+                    continue;
+
+                if (TryComp<MindComponent>(entity, out var mind) && mind.Mind != null)
                 {
-                    _currentTarget = entity;
-                    break;
+                    var role = GetEntityRole(mind.Mind);
+
+                    if (component.IgnoreTargets.Contains(role))
+                        continue;
+
+                    if (component.PriorityTargets.Contains(role) || (component.AutoMarkAsWanted && IsEntityWanted(entity)))
+                    {
+                        EngageTarget(uid, entity, component, ai, xform);
+                        return;
+                    }
                 }
             }
 
-            if (_currentTarget != null)
+            ContinuePatrol(ai, xform, frameTime);
+            CheckHealthStatus(uid, component);
+        }
+
+        private string GetEntityRole(Mind.Mind mind)
+        {
+            foreach (var role in mind.AllRoles)
             {
-                if (IsInArrestRange(_currentTarget))
+                if (role is AntagonistRole)
+                    return "Antagonist";
+                if (role is Job { CanBeAntag: false })
+                    return role.Name;
+            }
+
+            return "Civilian";
+        }
+
+        private bool IsEntityWanted(EntityUid entity)
+        {
+            return HasComp<WantedComponent>(entity);
+        }
+
+        private void EngageTarget(EntityUid uid, EntityUid target, BeepskyComponent component, AiControllerComponent ai, TransformComponent xform)
+        {
+            ai.TargetEntity = target;
+            ai.IsPatrolling = false;
+
+            if (TryComp<TransformComponent>(target, out var targetXform))
+            {
+                var distance = (xform.WorldPosition - targetXform.WorldPosition).Length;
+
+                if (distance <= component.ArrestRange && component.ProximityCuffing)
                 {
-                    StunAndCuff(_currentTarget);
-                    AnnounceArrest(_currentTarget);
-                    ReturnToPatrolling();
+                    AttemptCuff(uid, target, component);
                 }
                 else
                 {
-                    FollowCriminal(_currentTarget);
+                    MoveTowardsTarget(uid, target, ai);
                 }
             }
         }
 
-        private bool IsValidCriminal(IEntity entity)
+        private void AttemptCuff(EntityUid uid, EntityUid target, BeepskyComponent component)
         {
-            if (!entity.TryGetComponent(out CriminalComponent criminalComponent))
-                return false;
+            if (TryComp<HandsComponent>(uid, out var hands))
+            {
+                foreach (var item in hands.GetAllHeldItems())
+                {
+                    if (HasComp<HandcuffComponent>(item.Owner))
+                    {
+                        if (TryComp<CuffableComponent>(target, out var cuffable))
+                        {
+                            cuffable.TryAddNewCuffs(uid, item.Owner);
+                            AnnounceArrestSuccess(target, component);
+                            InitializePatrol(uid, component);
+                            return;
+                        }
+                    }
+                }
+            }
 
-            return criminalComponent.IsWanted && !criminalComponent.IsCuffed;
+            Logger.Warning($"Beepsky {uid} attempted to cuff {target} but has no cuffs available.");
         }
 
-        private bool IsInArrestRange(IEntity criminal)
+        private void MoveTowardsTarget(EntityUid uid, EntityUid target, AiControllerComponent ai)
         {
-            return Owner.Transform.Coordinates.InRange(criminal.Transform.Coordinates, 2f);
+            if (TryComp<TransformComponent>(target, out var targetXform))
+            {
+                ai.MoveTo(targetXform.Coordinates);
+            }
         }
 
-        private void FollowCriminal(IEntity criminal)
+        private void AnnounceArrestSuccess(EntityUid target, BeepskyComponent component)
         {
-            // Implement pathfinding or movement logic to follow the criminal.
+            var targetName = Name(target);
+            var location = Transform(target).Coordinates.ToString();
+
+            _chatManager.DispatchStationAnnouncement(
+                $"Arrest successful. Convict: {targetName} cuffed at {location}.",
+                "Beepsky",
+                playDefaultSound: false,
+                colorOverride: Color.Purple);
         }
 
-        private void StunAndCuff(IEntity criminal)
+        private void ContinuePatrol(AiControllerComponent ai, TransformComponent xform, float frameTime)
         {
-            // Implement the logic to stun and cuff the criminal.
-            // Include delays and animations as needed.
-        }
-
-        private void AnnounceArrest(IEntity criminal)
-        {
-            var location = GetNearestStationBeacon();
-            var message = Loc.GetString("beepsky-arrest-announcement",
-                ("criminal", criminal.Name), ("location", location));
-
-            var chat = IoCManager.Resolve<IChatManager>();
-            chat.EntitySay(Owner, message, message);
-        }
-
-        private void ReturnToPatrolling()
-        {
-            _currentTarget = null;
-            // Reset to patrolling behavior.
-        }
-
-        private string GetNearestStationBeacon()
-        {
-            // Implement logic to find the nearest station beacon's name.
-            return "Unknown Location"; // Placeholder return value.
-        }
-
-        private void OnEntityAttacked(EntityAttackedEvent ev)
-        {
-            if (ev.Target != Owner)
+            if (!ai.IsPatrolling || ai.PatrolRoutes.Count == 0)
                 return;
 
-            if (IsBelowSecurityCommandAccess(ev.Attacker))
+            var nextWaypoint = ai.PatrolRoutes.Peek();
+            var currentPos = xform.WorldPosition;
+            var distance = (currentPos - nextWaypoint).Length;
+
+            if (distance <= 0.5f)
             {
-                MarkAsWanted(ev.Attacker);
-                _currentTarget = ev.Attacker;
-                FollowCriminal(ev.Attacker);
+                ai.PatrolRoutes.Dequeue();
+
+                if (ai.PatrolRoutes.Count == 0 && ai.PatrolMode == PatrolMode.Loop)
+                {
+                    InitializePatrol(ai.Owner, Comp<BeepskyComponent>(ai.Owner));
+                }
+            }
+            else
+            {
+                ai.MoveTo(nextWaypoint);
             }
         }
 
-        private bool IsBelowSecurityCommandAccess(IEntity attacker)
+        private void OnDamageChanged(EntityUid uid, BeepskyComponent component, DamageChangedEvent args)
         {
-            if (!attacker.TryGetComponent(out AccessComponent accessComponent))
-                return true; // Consider entities without access as below command level.
-
-            return accessComponent.AccessLevel < AccessLevels.SecurityCommand;
-        }
-
-        private void MarkAsWanted(IEntity attacker)
-        {
-            if (attacker.TryGetComponent(out CriminalComponent criminalComponent))
+            if (args.DamageIncreased && args.NewTotalDamage >= component.DamageThreshold)
             {
-                criminalComponent.IsWanted = true;
-
-                var chat = IoCManager.Resolve<IChatManager>();
-                var message = Loc.GetString("beepsky-marked-wanted", ("attacker", attacker.Name));
-                chat.EntitySay(Owner, message, message);
+                HandleCriticalDamage(uid, component);
             }
         }
-    }
-}
 
-using System;
-using System.Collections.Generic;
-
-public class Beepsky
-{
-    public string Name { get; private set; } = "Beepsky";
-    public List<string> PatrolPaths { get; private set; } = new List<string> { "security_zone_1", "security_zone_2" };
-    public string PatrolMode { get; private set; } = "loop";
-    public float ArrestRange { get; private set; } = 7.5f;
-    public int MaxHealth { get; private set; } = 100;
-    public int CurrentHealth { get; private set; }
-    public int DamageThreshold { get; private set; } = 20;
-    public bool IsRepairable { get; private set; } = true;
-    public List<string> RepairItems { get; private set; }
-    public bool AutoMarkAsWanted { get; private set; } = true;
-    public List<string> PriorityTargets { get; private set; }
-    public List<string> IgnoreTargets { get; private set; }
-    public bool FollowUntilOutOfSight { get; private set; } = true;
-    public bool ProximityCuffing { get; private set; } = true;
-
-    public Beepsky()
-    {
-        CurrentHealth = MaxHealth;
-        RepairItems = new List<string> { "welder", "cable" };
-        PriorityTargets = new List<string> { "antagonist", "criminal" };
-        IgnoreTargets = new List<string> { "command", "security" };
-    }
-
-    public void Patrol()
-    {
-        // Logic for patrolling multiple paths
-        foreach (string path in PatrolPaths)
+        private void HandleCriticalDamage(EntityUid uid, BeepskyComponent component)
         {
-            Console.WriteLine($"{Name} is patrolling {path}.");
-            // Path-specific patrol logic
+            _chatManager.DispatchStationAnnouncement(
+                "Beepsky critically damaged. Returning for repairs.",
+                "Beepsky",
+                playDefaultSound: false,
+                colorOverride: Color.Red);
+
+            _audioSystem.PlayPvs(component.LowHealthSound, uid);
+            MoveToRepairStation(uid);
         }
 
-        if (PatrolMode == "loop")
+        private void MoveToRepairStation(EntityUid uid)
         {
-            // Logic to loop patrol routes
-        }
-        else if (PatrolMode == "random")
-        {
-            // Logic for random patrol paths
-        }
-    }
-
-    public void DetectCriminal(Criminal criminal)
-    {
-        if (IgnoreTargets.Contains(criminal.Role))
-        {
-            Console.WriteLine($"{Name} ignoring {criminal.Name} due to role: {criminal.Role}.");
-            return;
+            // Implement logic for moving Beepsky to the nearest repair station.
+            // This is a placeholder implementation.
+            Logger.Info($"Beepsky {uid} is moving to the repair station.");
         }
 
-        if (PriorityTargets.Contains(criminal.Role))
+        private void CheckHealthStatus(EntityUid uid, BeepskyComponent component)
         {
-            Console.WriteLine($"{Name} prioritizing target: {criminal.Name}.");
-        }
-
-        if (IsWithinRange(criminal.Position, ArrestRange))
-        {
-            if (AutoMarkAsWanted && criminal.IsBelowSecurityLevel())
+            if (TryComp<DamageableComponent>(uid, out var damageable))
             {
-                criminal.SetWantedStatus(true);
-            }
-            EngageCriminal(criminal);
-        }
-    }
-
-    private void EngageCriminal(Criminal criminal)
-    {
-        FollowCriminal(criminal);
-
-        if (IsInProximity(criminal.Position, ArrestRange))
-        {
-            Announce($"Arrest in progress. Convict: {criminal.Name} at {GetCurrentLocation()}.");
-
-            if (criminal.IsParalyzed)
-            {
-                criminal.Cuff();
-                Announce($"Arrest successful. Convict: {criminal.Name} cuffed at {GetCurrentLocation()}.");
-                ReturnToPatrol();
+                if (damageable.TotalDamage >= component.DamageThreshold)
+                {
+                    HandleCriticalDamage(uid, component);
+                }
             }
         }
-    }
-
-    private void FollowCriminal(Criminal criminal)
-    {
-        if (FollowUntilOutOfSight)
-        {
-            // Logic for following the criminal until out of sight
-        }
-    }
-
-    private bool IsWithinRange(Vector3 position, float range)
-    {
-        return Vector3.Distance(this.Position, position) <= range;
-    }
-
-    private bool IsInProximity(Vector3 position, float range)
-    {
-        return Vector3.Distance(this.Position, position) <= range;
-    }
-
-    private string GetCurrentLocation()
-    {
-        // Logic to get Beepsky's current location
-        return "Security Sector 1"; // Example location
-    }
-
-    private void ReturnToPatrol()
-    {
-        Announce("Returning to patrol.");
-        Patrol(); // Resume patrolling along the set path
-    }
-
-    public void Announce(string message)
-    {
-        // Logic to send message to the primary and backup communication channels
-        Console.WriteLine(message);
-    }
-
-    public void Repair(int repairAmount)
-    {
-        if (IsRepairable)
-        {
-            CurrentHealth = Math.Min(MaxHealth, CurrentHealth + repairAmount);
-            Console.WriteLine($"{Name} repaired to {CurrentHealth}/{MaxHealth} health.");
-        }
-    }
-
-    public void CheckHealthStatus()
-    {
-        if (CurrentHealth <= DamageThreshold)
-        {
-            Announce("Beepsky critically damaged. Returning for repairs.");
-            // Logic to handle return to a safe area for repairs
-        }
-    }
-}
-
-public class Criminal
-{
-    public string Name { get; set; }
-    public string Role { get; set; }
-    public Vector3 Position { get; set; }
-    public bool IsParalyzed { get; set; }
-    public bool WantedStatus { get; private set; }
-
-    public bool IsBelowSecurityLevel()
-    {
-        // Logic to determine if the person is below the access level of command or security
-        return true; // Placeholder logic
-    }
-
-    public void SetWantedStatus(bool status)
-    {
-        WantedStatus = status;
-    }
-
-    public void Cuff()
-    {
-        // Logic to cuff the criminal
-        Console.WriteLine($"{Name} has been cuffed.");
-    }
-}
-
-public struct Vector3
-{
-    public float X;
-    public float Y;
-    public float Z;
-
-    public static float Distance(Vector3 a, Vector3 b)
-    {
-        return (float)Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2) + Math.Pow(a.Z - b.Z, 2));
     }
 }
