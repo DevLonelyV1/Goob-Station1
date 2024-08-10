@@ -3,7 +3,7 @@
   name: Beepsky
   components:
     - type: Sprite
-      sprite: /Textures/Mobs/Beepsky.dmi
+      sprite: Resources\Prototypes\Goobstation\Beepsky\secbot1.png , Resources\Prototypes\Goobstation\Beepsky\secbot2.png , C:\Users\Home\Documents\GitHub\Goob-Station1\Resources\Prototypes\Goobstation\Beepsky\secbot3.png
 
     - type: Physics
       collisionMask: 0x1
