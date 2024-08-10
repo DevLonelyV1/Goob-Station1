@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using Robust.Shared.GameObjects;
 using Robust.Shared.IoC;
@@ -5,6 +7,15 @@ using Robust.Shared.Localization;
 using Robust.Shared.Physics;
 using Robust.Shared.Player;
 using Robust.Shared.Timing;
+
+// After the using directives, you can define your namespace and classes
+namespace Content.Server.Goobstation.Beepsky
+{
+    public class Beepsky
+    {
+        // Your class implementation
+    }
+}
 
 namespace Content.Server.AI
 {
