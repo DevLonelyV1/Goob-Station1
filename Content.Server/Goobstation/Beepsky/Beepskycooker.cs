@@ -1,17 +1,16 @@
-using System.IO;
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
+// This should be the top of the file
+using System;
+using Content.Server.Silicons.Borgs;
 
-public Recipe LoadRecipeFromYaml(string recipeId)
+namespace Content.Server.Goobstation.Beepsky
 {
-    var filePath = $"Recipes/{recipeId}.yaml";
-    if (!File.Exists(filePath))
-        return null;
-
-    var yamlText = File.ReadAllText(filePath);
-    var deserializer = new DeserializerBuilder()
-        .WithNamingConvention(CamelCaseNamingConvention.Instance)
-        .Build();
-    var recipe = deserializer.Deserialize<Recipe>(yamlText);
-    return recipe;
+    public class BeepskyCooker
+    {
+        // Place your public/private fields, methods, and properties here
+        
+        public void CookBeepsky()
+        {
+            // Implementation here
+        }
+    }
 }
