@@ -1,311 +1,108 @@
-using System;
-using System.Collections.Generic;
-using Content.Server.AI.Components;
-using Content.Server.AI.Pathfinding;
-using Content.Server.Beepsky.Components;
-using Content.Server.Chat.Managers;
-using Content.Server.Hands.Components;
-using Content.Server.Mind.Components;
-using Content.Server.Popups;
-using Content.Server.Weapon.Melee;
-using Content.Shared.Cuffs.Components;
-using Content.Shared.Damage;
-using Content.Shared.Hands;
-using Content.Shared.MobState.Components;
-using Content.Shared.Popups;
-using Content.Shared.Roles;
-using Content.Shared.Wearable.Components;
-using Robust.Server.AI;
-using Robust.Server.GameObjects;
-using Robust.Shared.Audio;
-using Robust.Shared.Containers;
+using Content.Server.AI;
+using Content.Server.Bot;
+using Content.Server.Bot.Components;
+using Content.Server.Stun;
+using Content.Server.PowerCell.Components;
+using Content.Shared.PowerCell;
+using Content.Shared.Interaction;
 using Robust.Shared.GameObjects;
 using Robust.Shared.IoC;
-using Robust.Shared.Log;
-using Robust.Shared.Map;
-using Robust.Shared.Physics;
-using Robust.Shared.Player;
-using Robust.Shared.Random;
-using Robust.Shared.Timing;
 
-namespace Content.Server.Beepsky.Systems
+namespace Content.Server.Beepsky
 {
-    public sealed class BeepskySystem : EntitySystem
+    public sealed class BeepskyLogic : AIBaseLogic
     {
-        [Dependency] private readonly IChatManager _chatManager = default!;
-        [Dependency] private readonly IRobustRandom _random = default!;
-        [Dependency] private readonly PathfindingSystem _pathfindingSystem = default!;
-        [Dependency] private readonly PopupSystem _popupSystem = default!;
-        [Dependency] private readonly MeleeWeaponSystem _meleeWeaponSystem = default!;
-        [Dependency] private readonly SharedAudioSystem _audioSystem = default!;
-        [Dependency] private readonly SharedContainerSystem _containerSystem = default!;
+        [Dependency] private readonly IEntityManager _entityManager = default!;
+        [Dependency] private readonly IStunbatonUsage _stunbatonUsage = default!;
+        [Dependency] private readonly IStateManagementSystem _stateManagementSystem = default!;
+        [Dependency] private readonly IPatrolSystem _patrolSystem = default!;
+        [Dependency] private readonly IHealthSystem _healthSystem = default!;
+
+        private EntityUid _target;
 
         public override void Initialize()
         {
             base.Initialize();
-
-            SubscribeLocalEvent<BeepskyComponent, ComponentStartup>(OnStartup);
-            SubscribeLocalEvent<BeepskyComponent, ComponentShutdown>(OnShutdown);
-            SubscribeLocalEvent<BeepskyComponent, DamageChangedEvent>(OnDamageChanged);
-            SubscribeLocalEvent<BeepskyComponent, EntityUnpausedEvent>(OnUnpaused);
+            SubscribeLocalEvent<FollowAndArrestComponent, TargetAcquiredEvent>(OnTargetAcquired);
+            SubscribeLocalEvent<FollowAndArrestComponent, TargetLostEvent>(OnTargetLost);
+            SubscribeLocalEvent<DamageableComponent, DamagedEvent>(OnDamaged);
         }
 
-        private void OnStartup(EntityUid uid, BeepskyComponent component, ComponentStartup args)
+        private void OnTargetAcquired(EntityUid uid, FollowAndArrestComponent component, TargetAcquiredEvent args)
         {
-            InitializePatrol(uid, component);
+            _target = args.Target;
+            // Switch to Chase state
+            _stateManagementSystem.SetState(uid, "Chase");
+            // Start following the target
+            _entityManager.GetComponent<MoveToOperatorComponent>(uid).MoveTo(_target);
         }
 
-        private void OnShutdown(EntityUid uid, BeepskyComponent component, ComponentShutdown args)
+        private void OnTargetLost(EntityUid uid, FollowAndArrestComponent component, TargetLostEvent args)
         {
-            // Cleanup logic if necessary
+            _target = EntityUid.Invalid;
+            // Return to Patrol state
+            _stateManagementSystem.SetState(uid, "Patrol");
+            // Resume patrol
+            _patrolSystem.StartPatrolling(uid);
         }
 
-        private void OnUnpaused(EntityUid uid, BeepskyComponent component, EntityUnpausedEvent args)
+        private void OnDamaged(EntityUid uid, DamageableComponent component, DamagedEvent args)
         {
-            // Handle unpausing logic if necessary
-        }
-
-        private void InitializePatrol(EntityUid uid, BeepskyComponent component)
-        {
-            if (component.PatrolPaths.Count == 0)
+            // If health is below a certain threshold, retreat or disable
+            if (_healthSystem.GetHealth(uid) <= 20)
             {
-                Logger.Warning($"Beepsky {uid} has no patrol paths defined.");
-                return;
+                _stateManagementSystem.SetState(uid, "Retreat");
+                // Implement retreat logic
             }
-
-            EnsureComp<AiControllerComponent>(uid);
-            switch (component.PatrolMode)
-            {
-                case PatrolMode.Loop:
-                    SetupLoopPatrol(uid, component);
-                    break;
-                case PatrolMode.Random:
-                    SetupRandomPatrol(uid, component);
-                    break;
-            }
-        }
-
-        private void SetupLoopPatrol(EntityUid uid, BeepskyComponent component)
-        {
-            var aiComponent = EntityManager.GetComponent<AiControllerComponent>(uid);
-            aiComponent.PatrolRoutes = new Queue<Vector2>();
-
-            foreach (var path in component.PatrolPaths)
-            {
-                var waypoints = GetWaypointsForPath(path);
-                foreach (var waypoint in waypoints)
-                {
-                    aiComponent.PatrolRoutes.Enqueue(waypoint);
-                }
-            }
-
-            aiComponent.IsPatrolling = true;
-        }
-
-        private void SetupRandomPatrol(EntityUid uid, BeepskyComponent component)
-        {
-            var aiComponent = EntityManager.GetComponent<AiControllerComponent>(uid);
-            aiComponent.PatrolRoutes = new Queue<Vector2>();
-
-            var randomPath = _random.Pick(component.PatrolPaths);
-            var waypoints = GetWaypointsForPath(randomPath);
-
-            foreach (var waypoint in waypoints)
-            {
-                aiComponent.PatrolRoutes.Enqueue(waypoint);
-            }
-
-            aiComponent.IsPatrolling = true;
-        }
-
-        private IEnumerable<Vector2> GetWaypointsForPath(string pathName)
-        {
-            // Implement logic to retrieve waypoints based on the path name.
-            // This is a placeholder implementation.
-            return new List<Vector2>();
         }
 
         public override void Update(float frameTime)
         {
             base.Update(frameTime);
 
-            foreach (var (beepsky, ai, xform) in EntityManager.EntityQuery<BeepskyComponent, AiControllerComponent, TransformComponent>())
-            {
-                if (!ai.IsActive)
-                    continue;
-
-                ProcessBehavior(beepsky.Owner, beepsky, ai, xform, frameTime);
-            }
-        }
-
-        private void ProcessBehavior(EntityUid uid, BeepskyComponent component, AiControllerComponent ai, TransformComponent xform, float frameTime)
-        {
-            var nearbyEntities = EntityManager.GetEntitiesInRange(uid, component.ArrestRange);
-
-            foreach (var entity in nearbyEntities)
-            {
-                if (entity == uid)
-                    continue;
-
-                if (TryComp<MindComponent>(entity, out var mind) && mind.Mind != null)
-                {
-                    var role = GetEntityRole(mind.Mind);
-
-                    if (component.IgnoreTargets.Contains(role))
-                        continue;
-
-                    if (component.PriorityTargets.Contains(role) || (component.AutoMarkAsWanted && IsEntityWanted(entity)))
-                    {
-                        EngageTarget(uid, entity, component, ai, xform);
-                        return;
-                    }
-                }
-            }
-
-            ContinuePatrol(ai, xform, frameTime);
-            CheckHealthStatus(uid, component);
-        }
-
-        private string GetEntityRole(Mind.Mind mind)
-        {
-            foreach (var role in mind.AllRoles)
-            {
-                if (role is AntagonistRole)
-                    return "Antagonist";
-                if (role is Job { CanBeAntag: false })
-                    return role.Name;
-            }
-
-            return "Civilian";
-        }
-
-        private bool IsEntityWanted(EntityUid entity)
-        {
-            return HasComp<WantedComponent>(entity);
-        }
-
-        private void EngageTarget(EntityUid uid, EntityUid target, BeepskyComponent component, AiControllerComponent ai, TransformComponent xform)
-        {
-            ai.TargetEntity = target;
-            ai.IsPatrolling = false;
-
-            if (TryComp<TransformComponent>(target, out var targetXform))
-            {
-                var distance = (xform.WorldPosition - targetXform.WorldPosition).Length;
-
-                if (distance <= component.ArrestRange && component.ProximityCuffing)
-                {
-                    AttemptCuff(uid, target, component);
-                }
-                else
-                {
-                    MoveTowardsTarget(uid, target, ai);
-                }
-            }
-        }
-
-        private void AttemptCuff(EntityUid uid, EntityUid target, BeepskyComponent component)
-        {
-            if (TryComp<HandsComponent>(uid, out var hands))
-            {
-                foreach (var item in hands.GetAllHeldItems())
-                {
-                    if (HasComp<HandcuffComponent>(item.Owner))
-                    {
-                        if (TryComp<CuffableComponent>(target, out var cuffable))
-                        {
-                            cuffable.TryAddNewCuffs(uid, item.Owner);
-                            AnnounceArrestSuccess(target, component);
-                            InitializePatrol(uid, component);
-                            return;
-                        }
-                    }
-                }
-            }
-
-            Logger.Warning($"Beepsky {uid} attempted to cuff {target} but has no cuffs available.");
-        }
-
-        private void MoveTowardsTarget(EntityUid uid, EntityUid target, AiControllerComponent ai)
-        {
-            if (TryComp<TransformComponent>(target, out var targetXform))
-            {
-                ai.MoveTo(targetXform.Coordinates);
-            }
-        }
-
-        private void AnnounceArrestSuccess(EntityUid target, BeepskyComponent component)
-        {
-            var targetName = Name(target);
-            var location = Transform(target).Coordinates.ToString();
-
-            _chatManager.DispatchStationAnnouncement(
-                $"Arrest successful. Convict: {targetName} cuffed at {location}.",
-                "Beepsky",
-                playDefaultSound: false,
-                colorOverride: Color.Purple);
-        }
-
-        private void ContinuePatrol(AiControllerComponent ai, TransformComponent xform, float frameTime)
-        {
-            if (!ai.IsPatrolling || ai.PatrolRoutes.Count == 0)
+            if (_target == EntityUid.Invalid)
                 return;
 
-            var nextWaypoint = ai.PatrolRoutes.Peek();
-            var currentPos = xform.WorldPosition;
-            var distance = (currentPos - nextWaypoint).Length;
-
-            if (distance <= 0.5f)
+            // If close to the target, attempt to use the stunbaton
+            if (_entityManager.GetComponent<TransformComponent>(_target).Coordinates
+                .InRange(_entityManager.GetComponent<TransformComponent>(Owner).Coordinates, 7.5f))
             {
-                ai.PatrolRoutes.Dequeue();
-
-                if (ai.PatrolRoutes.Count == 0 && ai.PatrolMode == PatrolMode.Loop)
-                {
-                    InitializePatrol(ai.Owner, Comp<BeepskyComponent>(ai.Owner));
-                }
-            }
-            else
-            {
-                ai.MoveTo(nextWaypoint);
+                _stunbatonUsage.UseStunbaton(Owner, _target);
+                // Switch to Arrest state
+                _stateManagementSystem.SetState(Owner, "Arrest");
             }
         }
 
-        private void OnDamageChanged(EntityUid uid, BeepskyComponent component, DamageChangedEvent args)
+        public override void Shutdown()
         {
-            if (args.DamageIncreased && args.NewTotalDamage >= component.DamageThreshold)
-            {
-                HandleCriticalDamage(uid, component);
-            }
+            base.Shutdown();
+            UnsubscribeLocalEvent<FollowAndArrestComponent, TargetAcquiredEvent>(OnTargetAcquired);
+            UnsubscribeLocalEvent<FollowAndArrestComponent, TargetLostEvent>(OnTargetLost);
+            UnsubscribeLocalEvent<DamageableComponent, DamagedEvent>(OnDamaged);
         }
+    }
+}
 
-        private void HandleCriticalDamage(EntityUid uid, BeepskyComponent component)
+public interface IStunbatonUsage
+{
+    void UseStunbaton(EntityUid beepsky, EntityUid target);
+}
+
+public class StunbatonUsageSystem : IStunbatonUsage
+{
+    [Dependency] private readonly IEntityManager _entityManager = default!;
+
+    public void UseStunbaton(EntityUid beepsky, EntityUid target)
+    {
+        if (!_entityManager.TryGetComponent<PowerCellSlotComponent>(beepsky, out var battery))
+            return;
+
+        if (battery.Cell != null && battery.Cell.Charge > 0)
         {
-            _chatManager.DispatchStationAnnouncement(
-                "Beepsky critically damaged. Returning for repairs.",
-                "Beepsky",
-                playDefaultSound: false,
-                colorOverride: Color.Red);
+            // Perform the stun action
+            // Implementation of stunning logic goes here, specific to your game mechanics
 
-            _audioSystem.PlayPvs(component.LowHealthSound, uid);
-            MoveToRepairStation(uid);
-        }
-
-        private void MoveToRepairStation(EntityUid uid)
-        {
-            // Implement logic for moving Beepsky to the nearest repair station.
-            // This is a placeholder implementation.
-            Logger.Info($"Beepsky {uid} is moving to the repair station.");
-        }
-
-        private void CheckHealthStatus(EntityUid uid, BeepskyComponent component)
-        {
-            if (TryComp<DamageableComponent>(uid, out var damageable))
-            {
-                if (damageable.TotalDamage >= component.DamageThreshold)
-                {
-                    HandleCriticalDamage(uid, component);
-                }
-            }
+            // Drain power if needed (but we have infinite charges here)
         }
     }
 }

@@ -1,44 +1,60 @@
-Beepsky:
-  Name: "Beepsky"
-  PatrolPaths:
-    - "security_zone_1"
-    - "security_zone_2"
-  PatrolMode: "loop" # Options: loop, random
-  ArrestRange: 7.5
-  CommunicationChannel:
-    Primary: "security"
-    Backup: "command"
-  Health:
-    MaxHealth: 100
-    DamageThreshold: 20 # Threshold at which Beepsky will trigger a repair mode
-    RepairItems:
-      - "welder"
-      - "cable"
-  Repairability:
-    RepairableWith:
-      - "welder"
-      - "cable"
-    RepairTime: 10 # Time in seconds required to repair Beepsky fully
-  WantedSystem:
-    AutoMarkAsWanted: true
-    PriorityTargets:
-      - "antagonist"
-      - "criminal"
-    IgnoreTargets:
-      - "command"
-      - "security"
-  ConstructionRequirements:
-    - "RemoteSignaler"
-    - "SecurityHelmet"
-    - "ProximitySensor"
-    - "CyborgArm"
-    - "Rod"
-    - "Cable"
-  EngagementLogic:
-    FollowUntilOutOfSight: true
-    ProximityCuffing: true
-  AnnouncementTemplates:
-    ArrestAnnouncement: "Arrest in progress. Convict: {criminal_name} at {location}."
-    CuffAnnouncement: "Arrest successful. Convict: {criminal_name} cuffed at {location}."
-    ReturnToPatrolAnnouncement: "Returning to patrol."
-    LowHealthAnnouncement: "Beepsky critically damaged. Returning for repairs."
+- type: entity
+  name: Beepsky
+  parent: BaseBot
+  id: Beepsky
+  components:
+    - type: NPCSteering
+      pathfinding: true
+      avoidFalling: true
+    - type: MoveToOperator
+      pathfinding: true
+    - type: Sprite
+      sprite: Robots/Beepsky.rsi
+      layers:
+        - state: idle
+    - type: AI
+      logic: BeepskyLogic
+    - type: Stunbaton
+      energyPerUse: 50
+    - type: PowerCellSlot
+      cellSlotName: battery
+    - type: Battery
+      maxCharge: 1000
+      startingCharge: 1000
+    - type: Item
+      size: Normal
+    - type: Clothing
+      sprite: Robots/Beepsky.rsi
+      slots:
+        - Belt
+    - type: Damageable
+      resistances:
+        Electric: 100
+    - type: Repairable
+      toolQuality: Welding
+    - type: InteractionTrigger
+    - type: ExplosionTrigger
+      explosionType: Default
+      maxIntensity: 200
+    - type: PatrolRoute
+      points:
+        - [10, 15]
+        - [15, 20]
+        - [20, 25]
+    - type: TargetDetection
+      detectionRange: 10
+    - type: NPCFollowAndArrest
+      arrestRange: 7.5
+    - type: NPCWantedSystem
+      wantedMarkingRange: 10
+    - type: StunbatonUsage
+      infiniteCharges: true
+    - type: Health
+      maxHealth: 150
+    - type: StateManagement
+      states:
+        - Patrol
+        - Chase
+        - Arrest
+        - Disabled
+        - Retreat
